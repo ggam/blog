@@ -1,6 +1,9 @@
 language: ruby
 rvm:
 - 2.2.0
+before_install:
+- git config user.name "Guillermo González de Agüero"
+- git config user.email "z06.guillermo@gmail.com"
 sudo: false
 script: bundle exec rake deploy
 env:
