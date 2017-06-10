@@ -1,0 +1,19 @@
+---
+layout: default
+---
+
+<div class="home">
+
+  <h1>Entradas</h1>
+
+  <ul style="list-style-type:none;">
+    {% for post in site.posts %}
+      <li>
+        <h2>
+          <a class="post-link" href="{{ post.url | prepend: site.baseurl }}">{{ post.title }}</a>
+        </h2>
+{{ post.date | date: '%d/%m/%Y' }}
+      </li>
+    {% endfor %}
+  </ul>
+</div>

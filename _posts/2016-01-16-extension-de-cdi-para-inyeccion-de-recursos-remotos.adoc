@@ -1,0 +1,687 @@
+
+:toc:
+
+= Extensión de CDI para inyección de recursos remotos
+:showtitle:
+:page-navtitle: Extensión de CDI para inyección de recursos remotos
+:layout: post
+
+== Breve introducción
+
+Hace poco me encontré en la necesidad de acceder desde una aplicación Java EE a una cola JMS ubicada en un servidor externo. La forma más estándar de hacerlo sería accediendo a un Contexto Inicial JNDIfootnote:[https://docs.oracle.com/javase/8/docs/api/javax/naming/InitialContext.html] remoto, y hacer la búsqueda sobre él.
+
+La especificación permite que el servidor inyecte recursos del JNDI local:
+
+[source,java]
+----
+@Resource(lookup = "java:/contenido")
+private String contenido;
+----
+
+Esto es equivalente al siguiente código:
+
+[source,java]
+----
+String contenido = InitialContext.doLookup("java:/contenido");
+----
+
+El problema es que la anotación `@Resource` footnote:[https://docs.oracle.com/javaee/7/api/javax/annotation/Resource.html] sólo permite hacer búsquedas en el contexto local.
+
+Para acceder a un contexto externo y hacer una búsqueda sobre él, tendríamos el siguiente código:
+
+[source,java]
+----
+Properties props = new Properties();
+props.put(Context.INITIAL_CONTEXT_FACTORY, "org.jboss.naming.remote.client.InitialContextFactory");<1>
+props.put(Context.PROVIDER_URL, "http-remoting://localhost:8080");
+props.put(Context.SECURITY_PRINCIPAL, "usuario");
+props.put(Context.SECURITY_CREDENTIALS, "contraseña");
+
+Context ctx = new InitialContext(props);
+String contenido = (String)ctx.lookup("java:/contenido");
+----
+<1> Esta propiedad varía en función del contexto al que vayamos a conectarnos. WildFly utiliza la clase `org.jboss.naming.remote.client.InitialContextFactory`, pero ésta sería distinta si nos conectáramos, por ejemplo, a un servidor LDAP o a GlassFish.
+
+Desde el propio servidor podemos hacer una entrada a un contexto externofootnote:[https://docs.jboss.org/author/display/WFLY10/Global+Bindings+Configuration] (en caso de que el servidor no soportara la creación de contextos externos, permitirá crear un `ObjectFactory` footnote:[https://docs.oracle.com/javase/8/docs/api/javax/naming/spi/ObjectFactory.html], que daría un resultado semejante). Teniendo en el contexto local una entrada `java:/remotenaming` al contexto externo, el código se simplifica, y se evita introducir contraseñas y direcciones en la propia aplicación:
+
+[source,java]
+----
+Context ctx = new InitialContext(props);
+InitialContext contextoExtero = InitialContext.doLookup("java:/remotenaming");
+String contenido = (String)ctx.lookup("java:/contenido");
+----
+
+Este código es funcional. Podríamos crear una clase reutilizable para la conexión al JNDI. Pero sería mucho mejor si el propio contenedor pudiera inyectarnos los recursos remotos igual que hace con los locales. Veremos cómo podemos conseguir esto con CDI y terminar usando un código así:
+
+[source,java]
+----
+@RemoteResource(externalContextLookup = "java:global/externo", lookup = "java:/contenido")
+private String contenido;
+----
+
+
+== Preparación del entorno
+
+Lo primero, antes de meternos en materia, vamos a configurar el entorno de trabajo para realizar las pruebas. Necesitaremos un servidor WildFlyfootnote:[http://wildfly.org/downloads/]. En mi caso, usaré la versión 10CR5. *No son necesarios conocimientos previos de WildFly. Sólo vamos a usarlo con fines demostrativos*.
+ 
+Necesitaremos un usuario de aplicación. Creamos el usuario "remote" con contraseña "remote":
+
+ c:\wildfly\bin\add-user.bat -u remote -p remote -a
+ 
+Arrancamos el servidor con siguiente comando:
+
+ c:\wildfly\bin\domain.bat
+ 
+Desde otra consola, abrimos el `jboss-cli`:
+
+ c:\wildfly\bin\jboss-cli.bat --connect
+
+Y ejecutamos los siguientes comandos, *todos de golpe* (copiar, pegar y pulsar enter):
+[literal]
+....
+batch
+
+:stop-servers(blocking=true)
+/host=master/server-config=server-one:remove
+/host=master/server-config=server-two:remove
+/host=master/server-config=server-three:remove
+/server-group=main-server-group:remove
+/server-group=other-server-group:remove 
+
+/profile=default:clone(to-profile=perfil-exportador)
+/profile=default:clone(to-profile=perfil-cliente)
+
+/server-group=grupo-exportador:add(profile=default, socket-binding-group=standard-sockets)
+/host=master/server-config=exportador:add(socket-binding-port-offset=100, group=grupo-exportador, auto-start=true)
+
+/server-group=grupo-cliente:add(profile=default, socket-binding-group=standard-sockets)
+/host=master/server-config=cliente:add(socket-binding-port-offset=110, group=grupo-cliente, auto-start=false)
+
+/profile=perfil-exportador/subsystem=naming/binding=java\:jboss\/exported/contenido:add(class=java.lang.String, value=Entrada JNDI exportada)
+/profile=perfil-cliente/subsystem=naming/binding=java:\/global\/externo:add(binding-type=external-context, module=org.jboss.as.naming, class=javax.naming.InitialContext, cache=true, environment=[java.naming.factory.initial=org.jboss.naming.remote.client.InitialContextFactory, java.naming.provider.url=http-remoting:\/\/localhost:8180, java.naming.security.principal=remote, java.naming.security.credentials=remote])
+
+/server-group=grupo-exportador:start-servers(blocking=true)
+/server-group=grupo-cliente:start-servers(blocking=true)
+
+run-batch
+....
+
+Con esto ya tenemos el entorno listo. Podemos empezar a trabajar.
+
+== Inyección de recursos remotos con un productor
+
+Para lograr nuestro fin hay dos posibilidaes:
+
+* Usar un método productor (anotado con `@Produces` footnote:[https://docs.oracle.com/javaee/7/api/javax/enterprise/inject/Produces.html])
+* Crear una extensión
+
+El objetivo de este artículo es crear una extensión, pero esto no es un capricho. Veremos que realmente, hacerlo con un productor no nos aportaríael resultado esperado.
+
+NOTE: No voy a ahondar en el concepto de lo que es o cómo funciona un productor en CDI. Para más información sobre su funcionamiento, recomiendo consultar la especificaciónfootnote:[http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#producer_method].
+
+Crearemos un calificadorfootnote:[ https://docs.oracle.com/javaee/7/api/javax/inject/Qualifier.html], al que llamaremos `@RemoteResource`:
+
+[source,java]
+----
+@Qualifier
+@Retention(RUNTIME)
+@Target({METHOD, FIELD, PARAMETER, TYPE})
+public @interface RemoteResource {
+
+    @Nonbinding
+    String externalContextLookup() default "";<1>
+
+    @Nonbinding
+    String lookup() default "";<2>
+
+    @Nonbinding
+    Class clazz() default Object.class;
+}
+----
+<1> Entrada en el JNDI local donde habremos vinculado el contexto remoto.
+<2> Búsqueda JNDI que se hará sobre el contexto externo para encontrar el recurso solicitado.
+<3> Clase a la que se tendrá que convertir el objeto. Lo entenderemos en un momento.
+
+Después nuestro método productor:
+
+[source,java]
+----
+@Dependent
+public class RemoteResourceProducer {
+
+    private static final Logger logger = Logger.getLogger(RemoteResourceProducer.class.getName());
+
+    @Produces
+    @RemoteResource
+    public Object create(InjectionPoint ip) {
+        RemoteResource annotation = ip.getAnnotated().getAnnotation(RemoteResource.class);
+
+        InitialContext contextoExterno;
+        try {
+            contextoExterno = InitialContext.doLookup(annotation.externalContextLookup()); <1>
+        } catch (NamingException e) {
+            logger.log(Level.SEVERE, "No se ha podido acceder al contexto externo. Error: ", e);
+            throw new InjectionException(e);
+        }
+
+        Object value;
+        try {
+            value = contextoExterno.lookup(annotation.lookup()); <2>
+        } catch (NamingException e) {
+            logger.log(Level.SEVERE, "No se ha podido obtener el objeto en el contexto externo. Error: ", e);
+            throw new InjectionException(e);
+        }
+
+        if (!annotation.clazz().isAssignableFrom(value.getClass())) { <3>
+            logger.log(Level.SEVERE, "El tipo de dato no es válido.");
+            throw new InjectionException("El tipo de dato no es válido.");
+        }
+
+        return value;
+    }
+}
+----
+
+<1> Obtiene el contexto externo
+<2> Hace la búsqueda en el contexto externo
+<3> Puesto que vamos a devolver un `Object`, tenemos que verificar que el dato es asignable.
+
+Podríamos crear un `EJB` que se inicie al despligue, para verificar la inyección:
+
+[source,java]
+----
+@Singleton
+@Startup
+public class Inyeccion {
+
+    private static final Logger logger = Logger.getLogger(Inyeccion.class.getName());
+
+    @Inject
+    @RemoteResource(externalContextLookup = "java:/remotenaming", lookup = "java:/contenido", clazz = String.class)
+    private Object contenido;
+
+    @PostConstruct
+    public void init() {
+        logger.log(Level.INFO, "El valor inyectado es: " + (String) contenido);
+    }
+}
+----
+
+¡Funciona! Verifica que el elemento exista y que sea asignable al elemento. En caso de fallo, lanzará una excepción. ¿No es lo mismo que ocurre con cualquier otra inyección? Parecido... pero no.
+
+Esta solución plantea dos problemas:
+
+* Siempre nos va a devolver un objeto de tipo `Object`. Podríamos crear un productor para cada tipo de objeto que fuéramos a recibir, pero seguiría sin ser una solución genérica, y acumularía código duplicado.
+* Obliga a hacer las validaciones en tiempo de ejecución. ¿Qué ocurre si el servidor remoto no está accesible? El despliegue se realizará correctamente, pero fallará en tiempo de ejecución cuando se intente acceder.
+
+Ahora que está claro que no era tan sencillo, vamos a crear la extensión.
+
+== ¿Qué es una extensión?
+
+Durante el despliegue de una aplicación, el contenedor de CDI procesa todas las clases que encuentra en el classpath y verifica si éstas son "candidatas" a ser `beans` y si puede realizarse en ellas inyección de dependencias. La especificación de CDI define una serie de eventos que el contenedor lanza durante el desplieguefootnote:[http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#init_events].
+
+Uno de estos eventos es el `ProcessInjectionTarget` footnote:[https://docs.oracle.com/javaee/7/api/javax/enterprise/inject/spi/ProcessInjectionTarget.html], que se lanzará por cada clase encontrada sobre la que *se pueda* realizar inyección de dependencias. Esto no quiere decir que tenga ninguna anotación de `@Inject`, sólo indica que es una clase válida para inyecciónfootnote:[http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#legal_injection_point_types].
+
+La clase `ProcessInjectionTarget` permite modificar la inyección que se realiza en la clase que está siendo procesada. ¿Qué nos aporta esto? Nos permite recorrer todas las propiedades de la clase, buscar aquellas que tienen nuestra anotación, e introducir un mecanismo propio para resolver la inyección.
+
+Todo eso se ejecutará antes de que la aplicación termine el despliegue, por lo que podremos realizar cualquier tipo de validación y, en caso de error, cancelar el propio despliegue.
+
+== Creando nuestra extensión
+
+Partiremos de un proyecto web (.war). Java EE 7 hizo opcional el archivo `beans.xml` que antes se requería para activar CDI. Sin embargo, su presencia sigue siendo necesaria para activar las extensiones:
+
+[source,xml]
+.WEB-INF/beans.xml
+----
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://xmlns.jcp.org/xml/ns/javaee"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://xmlns.jcp.org/xml/ns/javaee http://xmlns.jcp.org/xml/ns/javaee/beans_1_1.xsd">
+</beans>
+----
+
+Ahora vamos a crear una clase para la extensión, aunque de momento no va a hacer nada útil:
+[source,java]
+----
+package es.guillermogonzalezdeaguero.remoteresource;
+
+import javax.enterprise.inject.spi.Extension;
+
+public class RemoteResourceLoaderExtension implements Extension {
+    private static final Logger logger = Logger.getLogger(RemoteResourceLoaderExtension.class.getName());
+    
+    public RemoteResourceLoaderExtension() {
+        logger.log(Level.INFO, "La extensión ha sido instanciada.");
+    }
+}
+----
+
+CDI detecta las extensiones mediante el mecanismo de carga de servicios de Javafootnote:[https://docs.oracle.com/javase/tutorial/ext/basics/spi.html]. Para que detecte nuestra extensión, tendremos que crear un archivo
+ `javax.enterprise.inject.spi.Extension` en la carpeta META-INF\services, introduciendo como contenido el nombre completo de las clases de extensión, una en cada línea. En nuestro caso, sólo tenemos una extensión y el contenido sería el siguiente:
+
+[source, java]
+.META-INF\services\javax.enterprise.inject.spi.Extension
+----
+es.guillermogonzalezdeaguero.remoteresource.RemoteResourceLoaderExtension
+----
+
+Si desplegamos la aplicación, veremos en consola el mensaje "La extensión ha sido instanciada", indicando que todo va según lo previsto.
+
+El siguiente paso es crear la anotación que usaremos para indicar la inyección. Será nuestro equivalente al `@Inject`:
+
+[source,java]
+----
+package es.guillermogonzalezdeaguero.remoteresource;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@Retention(value = RetentionPolicy.RUNTIME)
+@Target(value = {ElementType.FIELD})
+public @interface RemoteResource {
+
+    public String externalContextLookup(); <1>
+
+    public String lookup(); <2>
+}
+----
+
+<1> Búsqueda que debe hacerse en el JNDI local para obtener el `InitialContext` remoto
+<2> Búsqueda que se hará sobre el contexto externo para obtener el recurso a inyectar
+
+Es importante fijarse en el hecho de que la anotación *no es un calificador*, sino una anotación a secas. Los calificadores son anotaciones especiales que CDI utiliza en su mecanismo estándar de inyección para distinguir distintos `beans` de un mismo tipo. Nosotros estamos gestionando nuestra propia inyección y por tanto, no tenemos ninguna restricción.
+
+Vamos a crear ahora un EJB que se arranque en el despliegue y que haga uso de esta anotación:
+
+[source,java]
+----
+package es.gonzalezdeaguero.remoteresourcetest;
+
+import es.guillermogonzalezdeaguero.remoteresource.RemoteResource;
+import javax.annotation.PostConstruct;
+import javax.ejb.Singleton;
+import javax.ejb.Startup;
+
+@Singleton
+@Startup
+public class InjectionTest {
+
+    @RemoteResource(externalContextLookup = "java:global/externo", lookup = "java:/contenido")
+    private String contenido;
+
+    @PostConstruct
+    public void init() {
+        System.out.println("Contenido leído del JNDI remoto: " + contenido);
+    }
+}
+----
+
+Si desplegamos ahora la aplicación, veremos que, como era de esperar, la variable es nula. Es lógico, teniendo en cuenta que nuestra extensión todavía no hace nada. Pero, si no ha sido posible procesar la inyección, ¿por qué CDI no ha lanzado una excepción indicándolofootnote:[http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#unsatisfied_and_ambig_dependencies]? Muy sencillo: CDI *no sabe que para nosotros esa anotación representa un punto de inyección*. A todos los efectos, esa anotación no representa más que un metadato. Para CDI no es nada. Lo será para nosotros cuando hayamos programado la extensión, y correrá por nuestra cuenta hacer las verificaciones pertinentes y lanzar las excepcciones `DefinitionError` footnote:[http://docs.oracle.com/javaee/7/api/javax/enterprise/inject/spi/DefinitionException.html] o `DeploymentException` footnote:[https://docs.oracle.com/javaee/7/api/javax/enterprise/inject/spi/DeploymentException.html].
+
+Vamos a añadir ahora el código a nuestra extensión:
+
+[source,java]
+----
+package es.guillermogonzalezdeaguero.remoteresource;
+
+import java.lang.reflect.Field;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Set;
+import java.util.logging.Logger;
+import javax.enterprise.context.spi.CreationalContext;
+import javax.enterprise.event.Observes;
+import javax.enterprise.inject.InjectionException;
+import javax.enterprise.inject.spi.AnnotatedField;
+import javax.enterprise.inject.spi.AnnotatedType;
+import javax.enterprise.inject.spi.Extension;
+import javax.enterprise.inject.spi.InjectionPoint;
+import javax.enterprise.inject.spi.InjectionTarget;
+import javax.enterprise.inject.spi.ProcessInjectionTarget;
+import javax.naming.InitialContext;
+import javax.naming.NamingException;
+
+/**
+ *
+ * @author Guillermo González de Agüero
+ */
+public class RemoteResourceLoaderExtension implements Extension {
+
+    private static final Logger logger = Logger.getLogger(RemoteResourceLoaderExtension.class.getName());
+
+    public <T> void initializePropertyLoading(final @Observes ProcessInjectionTarget<T> pit) {
+        AnnotatedType<T> at = pit.getAnnotatedType();
+
+        boolean anyMatch = at.getFields().
+                stream().
+                anyMatch(f -> f.isAnnotationPresent(RemoteResource.class));<1>
+        if (!anyMatch) {
+            return;
+        }
+
+        // Se verifica que todas las inyecciones sean válidas
+        Map<AnnotatedField, Object> fieldValues = new HashMap<>();
+        at.getFields().stream().
+                filter(f -> f.isAnnotationPresent(RemoteResource.class)).
+                forEach(annotatedField -> {<2>
+                    RemoteResource remoteResource = annotatedField.getAnnotation(RemoteResource.class);
+                    Field field = annotatedField.getJavaMember();
+
+                    try {
+                        T value = performLookup(remoteResource);
+                        validateValue(field, value);
+                    } catch (Exception e) {
+                        pit.addDefinitionError(new InjectionException(e));<3>
+                    }
+                });
+
+        // Se establece el mecanismo para realizar la inyección cuando algún bean la solicite
+        final InjectionTarget<T> it = pit.getInjectionTarget();
+        InjectionTarget<T> wrapped = new InjectionTarget<T>() {
+            @Override
+            @SuppressWarnings("unchecked")
+            public void inject(T instance, CreationalContext<T> ctx) {
+                it.inject(instance, ctx);<4>
+                
+                Stream.of(instance.getClass().getDeclaredFields()).
+                        filter(f -> f.isAnnotationPresent(RemoteResource.class)).
+                        forEach(field -> {
+                            T value = null;
+                            try {
+                                value = performLookup(field.getAnnotation(RemoteResource.class));<5>
+                                validateValue(field, value);
+                            } catch (Exception e) {
+                                throw new InjectionException(e);
+                            }
+
+                            try {
+                                field.set(instance, value);<6>
+                            } catch (IllegalArgumentException | IllegalAccessException e) {
+                                throw new InjectionException(e);
+                            }
+                        });
+            }
+
+            @Override
+            public void postConstruct(T instance) {
+                it.postConstruct(instance);
+            }
+
+            @Override
+            public void preDestroy(T instance) {
+                it.dispose(instance);
+            }
+
+            @Override
+            public void dispose(T instance) {
+                it.dispose(instance);
+            }
+
+            @Override
+            public Set<InjectionPoint> getInjectionPoints() {
+                return it.getInjectionPoints();
+            }
+
+            @Override
+            public T produce(CreationalContext<T> ctx) {
+                return it.produce(ctx);
+            }
+        };
+
+        pit.setInjectionTarget(wrapped);<7>
+    }
+
+    private <T> T performLookup(RemoteResource annotation) throws NamingException {
+        String externalContextLookup = annotation.externalContextLookup();
+        String jndiLookup = annotation.lookup();
+
+        InitialContext context = InitialContext.doLookup(externalContextLookup);
+
+        return (T) context.lookup(jndiLookup);
+    }
+
+    private <T> void validateValue(Field field, T value) {
+        if (value == null) {
+            throw new IllegalArgumentException("No value found for field " + field.toString());
+        }
+
+        if (!field.getType().isAssignableFrom(value.getClass())) {
+            throw new IllegalArgumentException("Incompatible value type for field " + field.toString());
+        }
+    }
+}
+----
+
+<1> A este método nos van a llegar todas las clases que se procesen. Verificamos que efectivamente haya *alguna* propiedad con nuestra anotación
+<2> Cogemos únicamente las propiedades anotadas y verificamos que la búsqueda sea válida
+<3> En caso de error, debemos avisar al contenedor para que muestre un mensaje al usuario y cancele el despliegue, si es necesario.
+<4> Delegamos de primeras todas las inyecciones al método que hubiera predefinido. Lo que estamos haciendo aquí es modificar *toda la inyección en esta clase*. Esto incluye las propiedades anotadas con `@Inject`. Haciendo esta llamada, dejamos que el contenedor *y otras extensiones que se hayan cargado antes de la nuestra* hagan lo que tuvieran ya previsto, y después añadimos nuestro procesamiento.
+<5> Se van recorriendo todos los campos y se hace la búsqueda del JNDI y se valida de nuevo (el valor podría haber cambiado).
+<6> Finalmente asignamos el valor. Este método `inject()` será llamado cada vez que se instancie una clase y se requiera inyectar un campo con nuestra anotación.
+<7> Cambiamos el `InjectionTarget` footnote:[https://docs.oracle.com/javaee/7/api/javax/enterprise/inject/spi/InjectionTarget.html] de la clase por el nuestro, que ha decoradofootnote:[https://es.wikipedia.org/wiki/Decorator_%28patr%C3%B3n_de_dise%C3%B1o%29] el original.
+
+La idea es muy sencilla: 
+
+* CDI llamará a nuestra extensión lanzando un evento por cada clase que encuentre sobre la que se pueda realizar inyección.
+* En cada clase, verificaremos si tiene alguna propiedad donde *nosotros* debamos hacer algún tipo de inyección
+* Verificamos la disponibilidad de los datos solicitados en cada caso.
+* Decoramos el `InjectionTarget` de la clase, añadiendo la lógica necesaria para realizar la inyección en nuestros campos.
+
+Si desplegamos ahora nuestra aplicación, veremos que el valor se inyecta correctamente. Podemos probar a parar el servidor remoto para verificar que se ejecutan correctamente las validaciones y se cancela el despliegue en caso de que el recurso remoto no esté disponible.
+
+== Empaquetado y distribución de código
+
+Todo este trabajo está muy bien, pero no queremos copiar y pegar en cada proyecto donde lo necesitemos. Por suerte, la especificación contempla la posibilidad de empaquetar las extensiones en un JARfootnote:[http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#bean_archive]. Sólo tendremos que mover nuestras clases, el `META-INF\services\javax.enterprise.inject.spi.Extension` y copiar el `beans.xml` a la carpeta META-INF, y ya podremos compilar como JAR e importarlo desde cualquier proyecto web.
+
+La inclusión del `beans.xml` dentro del JAR no es necesaria: funcionaría sin ella *siempre y cuando el proyecto web que la importe contenga un beans.xml*. Puesto que este fichero es opcional en Java EE 7, para evitar cualquier tipo de problema, lo mejor es incluirlo en el propio JAR. Para no tener incompatibilidades entre los atributos del beans.xml de nuestro JAR y los del WAR que lo importe, nuestro `beans.xml` del JAR debe estar vacío o dejar todos los valores por defecto, como en nuestro ejemplo.
+
+== Trabajo posterior
+
+Genial, tenemos nuestra extensión y ya se procesa nuestra anotación. Va todo de lujo. Pero ahora hemos usado nuestra anotación en un bean con ámbito de peticiónfootnote:[https://docs.oracle.com/javaee/7/api/javax/enterprise/context/RequestScoped.html]. Cada vez que alguien carga la página, se tiene que hacer la búsqueda en el JNDI remoto. Estaría bien poder cacheara el resultado. 
+
+Conforme vamos usándolo, descubrimos otras carencias: ¿qué ocurre si una búsqueda no está disponible en el momento del despliegue? La validación fallará y ya aplicación no se podrá desplegar. Por otra parte, sólo permitimos la inyección en propiedades, pero no en setters, como ocurre con los `@Inject`.
+
+A continuación, abordaremos las siguientes cuestiones:
+
+* Hacer opcional la validación del despliegue.
+* Permitir cachear las búsquedas remotas.
+
+Para empezar, modificaremos nuestra anotación `@RemoteResource` para dar soporte a estas nuevas funcionalidades:
+
+[source,java]
+----
+package es.guillermogonzalezdeaguero.remoteresource;
+
+import static java.lang.annotation.ElementType.FIELD;
+import java.lang.annotation.Retention;
+import static java.lang.annotation.RetentionPolicy.RUNTIME;
+import java.lang.annotation.Target;
+
+@Retention(RUNTIME)
+@Target(FIELD)
+public @interface RemoteResource {
+
+    String externalContextLookup();
+
+    String lookup();
+
+    boolean cache() default true;
+
+    boolean validateOnDeployment() default true;
+}
+----
+
+Y después modificaremos la extensión:
+
+[source,java]
+----
+package es.guillermogonzalezdeaguero.remoteresource;
+
+import java.lang.reflect.Field;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Logger;
+import java.util.stream.Stream;
+import javax.enterprise.context.spi.CreationalContext;
+import javax.enterprise.event.Observes;
+import javax.enterprise.inject.InjectionException;
+import javax.enterprise.inject.spi.AnnotatedType;
+import javax.enterprise.inject.spi.Extension;
+import javax.enterprise.inject.spi.InjectionPoint;
+import javax.enterprise.inject.spi.InjectionTarget;
+import javax.enterprise.inject.spi.ProcessInjectionTarget;
+import javax.naming.InitialContext;
+import javax.naming.NamingException;
+
+public class RemoteResourceLoaderExtension implements Extension {
+
+    private static final Logger logger = Logger.getLogger(RemoteResourceLoaderExtension.class.getName());
+
+    public <T> void initializePropertyLoading(final @Observes ProcessInjectionTarget<T> pit) {
+        AnnotatedType<T> at = pit.getAnnotatedType();
+
+        boolean anyMatch = at.getFields().
+                stream().
+                anyMatch(f -> f.isAnnotationPresent(RemoteResource.class));
+        if (!anyMatch) {
+            return;
+        }
+
+        Map<String, Object> cachedLookups = new HashMap<>();
+        at.getFields().stream().
+                filter(f -> f.isAnnotationPresent(RemoteResource.class)).
+                forEach(annotatedField -> {
+                    RemoteResource remoteResource = annotatedField.getAnnotation(RemoteResource.class);
+                    Field field = annotatedField.getJavaMember();
+
+                    if (remoteResource.validateOnDeployment()) {<1>
+                        try {
+                            lookupAndValidateAndCache(remoteResource, field, cachedLookups);
+                        } catch (Exception e) {
+                            pit.addDefinitionError(new InjectionException(e));
+                        }
+                    }
+
+                });
+
+        final InjectionTarget<T> it = pit.getInjectionTarget();
+        InjectionTarget<T> wrapped = new InjectionTarget<T>() {
+            @Override
+            @SuppressWarnings("unchecked")
+            public void inject(T instance, CreationalContext<T> ctx) {
+                it.inject(instance, ctx);
+
+                Stream.of(instance.getClass().getDeclaredFields()).
+                        filter(f -> f.isAnnotationPresent(RemoteResource.class)).
+                        forEach(field -> {
+                            RemoteResource annotation = field.getAnnotation(RemoteResource.class);
+
+                            field.setAccessible(true);
+                            try {
+                                T value = lookupAndValidateAndCache(annotation, field, cachedLookups);
+                                field.set(instance, value);
+                            } catch (Throwable e) {
+                                throw new InjectionException(e);
+                            }
+                        });
+            }
+
+            @Override
+            public void postConstruct(T instance) {
+                it.postConstruct(instance);
+            }
+
+            @Override
+            public void preDestroy(T instance) {
+                it.dispose(instance);
+            }
+
+            @Override
+            public void dispose(T instance) {
+                it.dispose(instance);
+            }
+
+            @Override
+            public Set<InjectionPoint> getInjectionPoints() {
+                return it.getInjectionPoints();
+            }
+
+            @Override
+            public T produce(CreationalContext<T> ctx) {
+                return it.produce(ctx);
+            }
+        };
+
+        pit.setInjectionTarget(wrapped);
+    }
+
+    private <T> T lookupAndValidateAndCache(RemoteResource annotation, Field field, Map<String, Object> cache) throws NamingException {
+        String key = annotation.externalContextLookup() + annotation.lookup();
+
+        T value;
+        if (annotation.cache()) {<2>
+            value = (T) cache.get(key);
+            if (value == null) {
+                value = performLookup(annotation);
+                validateValue(field, value);
+                cache.put(key, value);<3>
+            }
+        } else {
+            value = performLookup(annotation);
+            validateValue(field, value);
+        }
+
+        return value;
+    }
+
+    private <T> T performLookup(RemoteResource annotation) throws NamingException {
+        String externalContextLookup = annotation.externalContextLookup();
+        String jndiLookup = annotation.lookup();
+
+        InitialContext context = InitialContext.doLookup(externalContextLookup);
+
+        return (T) context.lookup(jndiLookup);
+    }
+
+    private <T> void validateValue(Field field, T value) {
+        if (value == null) {
+            throw new IllegalArgumentException("No value found for field " + field.toString());
+        }
+
+        if (!field.getType().isAssignableFrom(value.getClass())) {
+            throw new IllegalArgumentException("Incompatible value type for field " + field.toString());
+        }
+    }
+}
+----
+
+<1> Sólo se valida en el despliegue en caso de que se haya solicitado
+<2> Verificamos si el elemento hace uso de caché.
+<3> Se guarda el valor para usos futuros usando como clave la búsqueda del contexto externo concatenado la búsqueda local y la remota.
+
+== Conclusión
+
+CDI ha cambiado la forma en que se programan aplicaciones para la plataforma Java EE. Va camino de convertirse en el lo que debería haber sido desde un primer momento el EJBfootnote:[https://blogs.oracle.com/theaquarium/entry/ejb_and_cdi_alignment_and]. Pero CDI va mucho más allá.
+
+La mayoría de la gente conoce sus funcionalidaes básicas: inyección de dependencias, contextos, productores, calificadores, etc. Lo que se usa todos los días. La API de extensiones es algo oscura y desconocida, aunque hemos podido ver que realmente no es complicada de usar.
+
+Está claro que esta no es la extensión más útil que podríamos haber creado. No se hacen búsquedas en JNDI externos a diario, y para casos concretos, es más cómodo crear un alias local en el servidor. Lo verdaderamente importante es comprender las posibilidades que nos ofrece la plataforma y saber cuándo debe usarse cada cosa.
+
+Realmente, hemos visto que no hemos hecho nada que no hubiéramos podido hacer con un simple productor. Pero también hemos visto las dos grandes ventajas de usar una extensión: *tipado fuerte* y *validación en el despliegue*.
+
+En Internet podemos encontrar varios artículos que explican cómo crear un sistema de configuración en CDI mediante un productorfootnote:[https://martinsdeveloperworld.wordpress.com/2014/02/23/injecting-configuration-values-using-cdis-injectionpoint/]. Es una opción sencilla y válida, pero ¿no sería mejor que durante el despliegue se verificase que todas las configuraciones solicitadas están disponibles? Imaginemos un caso algo más complejo: tenemos un archivo de configuración que se fusiona después con una lista de propiedades leídas de base de datos. Conforme aumenta la lógica, coge fuerza la idea de delegar el trabajo al propio contenedor.
+
+Crear un productor tiene la ventaja de permitir lidiar con datos que puedan variar en tiempo de ejecución. Como norma general, siempre que todas las posibilidades se conocen ya en el despliegue, recomiendo usar una extensión.
+
+Código fuente: https://github.com/ggam/remoteresource
+
+== Bibliografía
+
+[bibliography]
+- Detalles de implementación: http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html
+- Configuración del servidor: https://docs.jboss.org/author/display/WFLY10/Naming+Subsystem+Configuration
+- Idea original: http://www.javacodegeeks.com/2014/02/tutorial-writing-your-own-cdi-extension.html
