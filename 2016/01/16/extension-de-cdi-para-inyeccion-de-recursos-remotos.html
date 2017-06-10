@@ -1,0 +1,1063 @@
+<!doctype html>
+<!--[if IE 9]>
+<html class="lt-ie10" lang="en"> <![endif]-->
+<html class="no-js" lang="en" data-useragent="Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.2; Trident/6.0)">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Extensión de CDI para inyección de recursos remotos</title>
+    <meta name="description" content="The Jekyll AsciiDoc Quickstart project is a leg-up in starting your own website hosted on GitHub with content based in AsciiDoc.">
+    <meta name="author" content="Your name goes here">
+    <meta name="copyright" content="Maybe consider a Creative Commons license">
+    <link rel="stylesheet" href="/blog/css/foundation.css">
+    <link rel="stylesheet" href="/blog/css/font-awesome.css">
+    <link rel="stylesheet" href="/blog/css/coderay.css">
+    <link rel="stylesheet" href="/blog/css/asciidoctor.css">
+    <style>
+    .row {
+        max-width: 75rem;
+    }
+    </style>
+    <script src="/blog/js/vendor/modernizr.js"></script>
+    <script src="/blog/js/toc.js"></script>
+</head>
+<body>
+
+
+<!-- Nav Bar -->
+
+<nav class="top-bar" data-topbar>
+    <ul class="title-area">
+        <!-- Title Area -->
+        <li class="name">
+            <h1>
+                <a href="/blog/">Guillermo González de Agüero</a>
+            </h1>
+        </li>
+        <li class="toggle-topbar menu-icon"><a href="#"><span>Menu</span></a></li>
+    </ul>
+    <section class="top-bar-section">
+
+    	<!-- Right Nav Section -->
+        <ul class="right">
+            <li class="divider hide-for-small"></li>
+            <li><a href="sobre-mi.html">Sobre mí</a></li>
+        </ul>
+    </section>
+</nav>
+<!-- End Nav -->
+
+
+<!-- Main Page Content and Sidebar -->
+
+<div class="row">
+
+    <!-- Main Blog Content -->
+    <div class="large-12 columns" role="content">
+
+        <h1>Extensión de CDI para inyección de recursos remotos</h1>
+<div id="toc" class="toc">
+<div id="toctitle">Table of Contents</div>
+<ul class="sectlevel1">
+<li><a href="#breve_introducción">Breve introducción</a></li>
+<li><a href="#preparación_del_entorno">Preparación del entorno</a></li>
+<li><a href="#inyección_de_recursos_remotos_con_un_productor">Inyección de recursos remotos con un productor</a></li>
+<li><a href="#qué_es_una_extensión">¿Qué es una extensión?</a></li>
+<li><a href="#creando_nuestra_extensión">Creando nuestra extensión</a></li>
+<li><a href="#empaquetado_y_distribución_de_código">Empaquetado y distribución de código</a></li>
+<li><a href="#trabajo_posterior">Trabajo posterior</a></li>
+<li><a href="#conclusión">Conclusión</a></li>
+<li><a href="#bibliografía">Bibliografía</a></li>
+</ul>
+</div>
+<div class="sect1">
+<h2 id="breve_introducción">Breve introducción</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Hace poco me encontré en la necesidad de acceder desde una aplicación Java EE a una cola JMS ubicada en un servidor externo. La forma más estándar de hacerlo sería accediendo a un Contexto Inicial JNDI<sup class="footnote">[<a id="_footnoteref_1" class="footnote" href="#_footnote_1" title="View footnote.">1</a>]</sup> remoto, y hacer la búsqueda sobre él.</p>
+</div>
+<div class="paragraph">
+<p>La especificación permite que el servidor inyecte recursos del JNDI local:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="annotation">@Resource</span>(lookup = <span class="string"><span class="delimiter">&quot;</span><span class="content">java:/contenido</span><span class="delimiter">&quot;</span></span>)
+<span class="directive">private</span> <span class="predefined-type">String</span> contenido;</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Esto es equivalente al siguiente código:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="predefined-type">String</span> contenido = <span class="predefined-type">InitialContext</span>.doLookup(<span class="string"><span class="delimiter">&quot;</span><span class="content">java:/contenido</span><span class="delimiter">&quot;</span></span>);</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>El problema es que la anotación <code>@Resource</code> <sup class="footnote">[<a id="_footnoteref_2" class="footnote" href="#_footnote_2" title="View footnote.">2</a>]</sup> sólo permite hacer búsquedas en el contexto local.</p>
+</div>
+<div class="paragraph">
+<p>Para acceder a un contexto externo y hacer una búsqueda sobre él, tendríamos el siguiente código:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="predefined-type">Properties</span> props = <span class="keyword">new</span> <span class="predefined-type">Properties</span>();
+props.put(<span class="predefined-type">Context</span>.INITIAL_CONTEXT_FACTORY, <span class="string"><span class="delimiter">&quot;</span><span class="content">org.jboss.naming.remote.client.InitialContextFactory</span><span class="delimiter">&quot;</span></span>);<i class="conum" data-value="1"></i><b>(1)</b>
+props.put(<span class="predefined-type">Context</span>.PROVIDER_URL, <span class="string"><span class="delimiter">&quot;</span><span class="content">http-remoting://localhost:8080</span><span class="delimiter">&quot;</span></span>);
+props.put(<span class="predefined-type">Context</span>.SECURITY_PRINCIPAL, <span class="string"><span class="delimiter">&quot;</span><span class="content">usuario</span><span class="delimiter">&quot;</span></span>);
+props.put(<span class="predefined-type">Context</span>.SECURITY_CREDENTIALS, <span class="string"><span class="delimiter">&quot;</span><span class="content">contraseña</span><span class="delimiter">&quot;</span></span>);
+
+<span class="predefined-type">Context</span> ctx = <span class="keyword">new</span> <span class="predefined-type">InitialContext</span>(props);
+<span class="predefined-type">String</span> contenido = (<span class="predefined-type">String</span>)ctx.lookup(<span class="string"><span class="delimiter">&quot;</span><span class="content">java:/contenido</span><span class="delimiter">&quot;</span></span>);</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td>Esta propiedad varía en función del contexto al que vayamos a conectarnos. WildFly utiliza la clase <code>org.jboss.naming.remote.client.InitialContextFactory</code>, pero ésta sería distinta si nos conectáramos, por ejemplo, a un servidor LDAP o a GlassFish.</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Desde el propio servidor podemos hacer una entrada a un contexto externo<sup class="footnote">[<a id="_footnoteref_3" class="footnote" href="#_footnote_3" title="View footnote.">3</a>]</sup> (en caso de que el servidor no soportara la creación de contextos externos, permitirá crear un <code>ObjectFactory</code> <sup class="footnote">[<a id="_footnoteref_4" class="footnote" href="#_footnote_4" title="View footnote.">4</a>]</sup>, que daría un resultado semejante). Teniendo en el contexto local una entrada <code>java:/remotenaming</code> al contexto externo, el código se simplifica, y se evita introducir contraseñas y direcciones en la propia aplicación:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="predefined-type">Context</span> ctx = <span class="keyword">new</span> <span class="predefined-type">InitialContext</span>(props);
+<span class="predefined-type">InitialContext</span> contextoExtero = <span class="predefined-type">InitialContext</span>.doLookup(<span class="string"><span class="delimiter">&quot;</span><span class="content">java:/remotenaming</span><span class="delimiter">&quot;</span></span>);
+<span class="predefined-type">String</span> contenido = (<span class="predefined-type">String</span>)ctx.lookup(<span class="string"><span class="delimiter">&quot;</span><span class="content">java:/contenido</span><span class="delimiter">&quot;</span></span>);</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Este código es funcional. Podríamos crear una clase reutilizable para la conexión al JNDI. Pero sería mucho mejor si el propio contenedor pudiera inyectarnos los recursos remotos igual que hace con los locales. Veremos cómo podemos conseguir esto con CDI y terminar usando un código así:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="annotation">@RemoteResource</span>(externalContextLookup = <span class="string"><span class="delimiter">&quot;</span><span class="content">java:global/externo</span><span class="delimiter">&quot;</span></span>, lookup = <span class="string"><span class="delimiter">&quot;</span><span class="content">java:/contenido</span><span class="delimiter">&quot;</span></span>)
+<span class="directive">private</span> <span class="predefined-type">String</span> contenido;</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="preparación_del_entorno">Preparación del entorno</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Lo primero, antes de meternos en materia, vamos a configurar el entorno de trabajo para realizar las pruebas. Necesitaremos un servidor WildFly<sup class="footnote">[<a id="_footnoteref_5" class="footnote" href="#_footnote_5" title="View footnote.">5</a>]</sup>. En mi caso, usaré la versión 10CR5. <strong>No son necesarios conocimientos previos de WildFly. Sólo vamos a usarlo con fines demostrativos</strong>.</p>
+</div>
+<div class="paragraph">
+<p>Necesitaremos un usuario de aplicación. Creamos el usuario "remote" con contraseña "remote":</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>c:\wildfly\bin\add-user.bat -u remote -p remote -a</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Arrancamos el servidor con siguiente comando:</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>c:\wildfly\bin\domain.bat</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Desde otra consola, abrimos el <code>jboss-cli</code>:</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>c:\wildfly\bin\jboss-cli.bat --connect</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Y ejecutamos los siguientes comandos, <strong>todos de golpe</strong> (copiar, pegar y pulsar enter):</p>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>batch
+
+:stop-servers(blocking=true)
+/host=master/server-config=server-one:remove
+/host=master/server-config=server-two:remove
+/host=master/server-config=server-three:remove
+/server-group=main-server-group:remove
+/server-group=other-server-group:remove
+
+/profile=default:clone(to-profile=perfil-exportador)
+/profile=default:clone(to-profile=perfil-cliente)
+
+/server-group=grupo-exportador:add(profile=default, socket-binding-group=standard-sockets)
+/host=master/server-config=exportador:add(socket-binding-port-offset=100, group=grupo-exportador, auto-start=true)
+
+/server-group=grupo-cliente:add(profile=default, socket-binding-group=standard-sockets)
+/host=master/server-config=cliente:add(socket-binding-port-offset=110, group=grupo-cliente, auto-start=false)
+
+/profile=perfil-exportador/subsystem=naming/binding=java\:jboss\/exported/contenido:add(class=java.lang.String, value=Entrada JNDI exportada)
+/profile=perfil-cliente/subsystem=naming/binding=java:\/global\/externo:add(binding-type=external-context, module=org.jboss.as.naming, class=javax.naming.InitialContext, cache=true, environment=[java.naming.factory.initial=org.jboss.naming.remote.client.InitialContextFactory, java.naming.provider.url=http-remoting:\/\/localhost:8180, java.naming.security.principal=remote, java.naming.security.credentials=remote])
+
+/server-group=grupo-exportador:start-servers(blocking=true)
+/server-group=grupo-cliente:start-servers(blocking=true)
+
+run-batch</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Con esto ya tenemos el entorno listo. Podemos empezar a trabajar.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="inyección_de_recursos_remotos_con_un_productor">Inyección de recursos remotos con un productor</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Para lograr nuestro fin hay dos posibilidaes:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Usar un método productor (anotado con <code>@Produces</code> <sup class="footnote">[<a id="_footnoteref_6" class="footnote" href="#_footnote_6" title="View footnote.">6</a>]</sup>)</p>
+</li>
+<li>
+<p>Crear una extensión</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>El objetivo de este artículo es crear una extensión, pero esto no es un capricho. Veremos que realmente, hacerlo con un productor no nos aportaríael resultado esperado.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+No voy a ahondar en el concepto de lo que es o cómo funciona un productor en CDI. Para más información sobre su funcionamiento, recomiendo consultar la especificación<sup class="footnote">[<a id="_footnoteref_7" class="footnote" href="#_footnote_7" title="View footnote.">7</a>]</sup>.
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Crearemos un calificador<sup class="footnote">[<a id="_footnoteref_8" class="footnote" href="#_footnote_8" title="View footnote.">8</a>]</sup>, al que llamaremos <code>@RemoteResource</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="annotation">@Qualifier</span>
+<span class="annotation">@Retention</span>(RUNTIME)
+<span class="annotation">@Target</span>({METHOD, FIELD, PARAMETER, TYPE})
+<span class="directive">public</span> <span class="annotation">@interface</span> RemoteResource {
+
+    <span class="annotation">@Nonbinding</span>
+    <span class="predefined-type">String</span> externalContextLookup() <span class="keyword">default</span> <span class="string"><span class="delimiter">&quot;</span><span class="delimiter">&quot;</span></span>;<i class="conum" data-value="1"></i><b>(1)</b>
+
+    <span class="annotation">@Nonbinding</span>
+    <span class="predefined-type">String</span> lookup() <span class="keyword">default</span> <span class="string"><span class="delimiter">&quot;</span><span class="delimiter">&quot;</span></span>;<i class="conum" data-value="2"></i><b>(2)</b>
+
+    <span class="annotation">@Nonbinding</span>
+    <span class="predefined-type">Class</span> clazz() <span class="keyword">default</span> <span class="predefined-type">Object</span>.class;
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td>Entrada en el JNDI local donde habremos vinculado el contexto remoto.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="2"></i><b>2</b></td>
+<td>Búsqueda JNDI que se hará sobre el contexto externo para encontrar el recurso solicitado.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="3"></i><b>3</b></td>
+<td>Clase a la que se tendrá que convertir el objeto. Lo entenderemos en un momento.</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Después nuestro método productor:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="annotation">@Dependent</span>
+<span class="directive">public</span> <span class="type">class</span> <span class="class">RemoteResourceProducer</span> {
+
+    <span class="directive">private</span> <span class="directive">static</span> <span class="directive">final</span> <span class="predefined-type">Logger</span> logger = <span class="predefined-type">Logger</span>.getLogger(RemoteResourceProducer.class.getName());
+
+    <span class="annotation">@Produces</span>
+    <span class="annotation">@RemoteResource</span>
+    <span class="directive">public</span> <span class="predefined-type">Object</span> create(InjectionPoint ip) {
+        RemoteResource annotation = ip.getAnnotated().getAnnotation(RemoteResource.class);
+
+        <span class="predefined-type">InitialContext</span> contextoExterno;
+        <span class="keyword">try</span> {
+            contextoExterno = <span class="predefined-type">InitialContext</span>.doLookup(annotation.externalContextLookup()); <i class="conum" data-value="1"></i><b>(1)</b>
+        } <span class="keyword">catch</span> (<span class="exception">NamingException</span> e) {
+            logger.log(<span class="predefined-type">Level</span>.SEVERE, <span class="string"><span class="delimiter">&quot;</span><span class="content">No se ha podido acceder al contexto externo. Error: </span><span class="delimiter">&quot;</span></span>, e);
+            <span class="keyword">throw</span> <span class="keyword">new</span> InjectionException(e);
+        }
+
+        <span class="predefined-type">Object</span> value;
+        <span class="keyword">try</span> {
+            value = contextoExterno.lookup(annotation.lookup()); <i class="conum" data-value="2"></i><b>(2)</b>
+        } <span class="keyword">catch</span> (<span class="exception">NamingException</span> e) {
+            logger.log(<span class="predefined-type">Level</span>.SEVERE, <span class="string"><span class="delimiter">&quot;</span><span class="content">No se ha podido obtener el objeto en el contexto externo. Error: </span><span class="delimiter">&quot;</span></span>, e);
+            <span class="keyword">throw</span> <span class="keyword">new</span> InjectionException(e);
+        }
+
+        <span class="keyword">if</span> (!annotation.clazz().isAssignableFrom(value.getClass())) { <i class="conum" data-value="3"></i><b>(3)</b>
+            logger.log(<span class="predefined-type">Level</span>.SEVERE, <span class="string"><span class="delimiter">&quot;</span><span class="content">El tipo de dato no es válido.</span><span class="delimiter">&quot;</span></span>);
+            <span class="keyword">throw</span> <span class="keyword">new</span> InjectionException(<span class="string"><span class="delimiter">&quot;</span><span class="content">El tipo de dato no es válido.</span><span class="delimiter">&quot;</span></span>);
+        }
+
+        <span class="keyword">return</span> value;
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td>Obtiene el contexto externo</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="2"></i><b>2</b></td>
+<td>Hace la búsqueda en el contexto externo</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="3"></i><b>3</b></td>
+<td>Puesto que vamos a devolver un <code>Object</code>, tenemos que verificar que el dato es asignable.</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Podríamos crear un <code>EJB</code> que se inicie al despligue, para verificar la inyección:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="annotation">@Singleton</span>
+<span class="annotation">@Startup</span>
+<span class="directive">public</span> <span class="type">class</span> <span class="class">Inyeccion</span> {
+
+    <span class="directive">private</span> <span class="directive">static</span> <span class="directive">final</span> <span class="predefined-type">Logger</span> logger = <span class="predefined-type">Logger</span>.getLogger(Inyeccion.class.getName());
+
+    <span class="annotation">@Inject</span>
+    <span class="annotation">@RemoteResource</span>(externalContextLookup = <span class="string"><span class="delimiter">&quot;</span><span class="content">java:/remotenaming</span><span class="delimiter">&quot;</span></span>, lookup = <span class="string"><span class="delimiter">&quot;</span><span class="content">java:/contenido</span><span class="delimiter">&quot;</span></span>, clazz = <span class="predefined-type">String</span>.class)
+    <span class="directive">private</span> <span class="predefined-type">Object</span> contenido;
+
+    <span class="annotation">@PostConstruct</span>
+    <span class="directive">public</span> <span class="type">void</span> init() {
+        logger.log(<span class="predefined-type">Level</span>.INFO, <span class="string"><span class="delimiter">&quot;</span><span class="content">El valor inyectado es: </span><span class="delimiter">&quot;</span></span> + (<span class="predefined-type">String</span>) contenido);
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>¡Funciona! Verifica que el elemento exista y que sea asignable al elemento. En caso de fallo, lanzará una excepción. ¿No es lo mismo que ocurre con cualquier otra inyección? Parecido&#8230;&#8203; pero no.</p>
+</div>
+<div class="paragraph">
+<p>Esta solución plantea dos problemas:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Siempre nos va a devolver un objeto de tipo <code>Object</code>. Podríamos crear un productor para cada tipo de objeto que fuéramos a recibir, pero seguiría sin ser una solución genérica, y acumularía código duplicado.</p>
+</li>
+<li>
+<p>Obliga a hacer las validaciones en tiempo de ejecución. ¿Qué ocurre si el servidor remoto no está accesible? El despliegue se realizará correctamente, pero fallará en tiempo de ejecución cuando se intente acceder.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Ahora que está claro que no era tan sencillo, vamos a crear la extensión.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="qué_es_una_extensión">¿Qué es una extensión?</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Durante el despliegue de una aplicación, el contenedor de CDI procesa todas las clases que encuentra en el classpath y verifica si éstas son "candidatas" a ser <code>beans</code> y si puede realizarse en ellas inyección de dependencias. La especificación de CDI define una serie de eventos que el contenedor lanza durante el despliegue<sup class="footnote">[<a id="_footnoteref_9" class="footnote" href="#_footnote_9" title="View footnote.">9</a>]</sup>.</p>
+</div>
+<div class="paragraph">
+<p>Uno de estos eventos es el <code>ProcessInjectionTarget</code> <sup class="footnote">[<a id="_footnoteref_10" class="footnote" href="#_footnote_10" title="View footnote.">10</a>]</sup>, que se lanzará por cada clase encontrada sobre la que <strong>se pueda</strong> realizar inyección de dependencias. Esto no quiere decir que tenga ninguna anotación de <code>@Inject</code>, sólo indica que es una clase válida para inyección<sup class="footnote">[<a id="_footnoteref_11" class="footnote" href="#_footnote_11" title="View footnote.">11</a>]</sup>.</p>
+</div>
+<div class="paragraph">
+<p>La clase <code>ProcessInjectionTarget</code> permite modificar la inyección que se realiza en la clase que está siendo procesada. ¿Qué nos aporta esto? Nos permite recorrer todas las propiedades de la clase, buscar aquellas que tienen nuestra anotación, e introducir un mecanismo propio para resolver la inyección.</p>
+</div>
+<div class="paragraph">
+<p>Todo eso se ejecutará antes de que la aplicación termine el despliegue, por lo que podremos realizar cualquier tipo de validación y, en caso de error, cancelar el propio despliegue.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="creando_nuestra_extensión">Creando nuestra extensión</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Partiremos de un proyecto web (.war). Java EE 7 hizo opcional el archivo <code>beans.xml</code> que antes se requería para activar CDI. Sin embargo, su presencia sigue siendo necesaria para activar las extensiones:</p>
+</div>
+<div class="listingblock">
+<div class="title">WEB-INF/beans.xml</div>
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="xml"><span class="preprocessor">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;</span>
+<span class="tag">&lt;beans</span> <span class="attribute-name">xmlns</span>=<span class="string"><span class="delimiter">&quot;</span><span class="content">http://xmlns.jcp.org/xml/ns/javaee</span><span class="delimiter">&quot;</span></span>
+       <span class="attribute-name">xmlns:xsi</span>=<span class="string"><span class="delimiter">&quot;</span><span class="content">http://www.w3.org/2001/XMLSchema-instance</span><span class="delimiter">&quot;</span></span>
+       <span class="attribute-name">xsi:schemaLocation</span>=<span class="string"><span class="delimiter">&quot;</span><span class="content">http://xmlns.jcp.org/xml/ns/javaee http://xmlns.jcp.org/xml/ns/javaee/beans_1_1.xsd</span><span class="delimiter">&quot;</span></span><span class="tag">&gt;</span>
+<span class="tag">&lt;/beans&gt;</span></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Ahora vamos a crear una clase para la extensión, aunque de momento no va a hacer nada útil:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="keyword">package</span> <span class="namespace">es.guillermogonzalezdeaguero.remoteresource</span>;
+
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.spi.Extension</span>;
+
+<span class="directive">public</span> <span class="type">class</span> <span class="class">RemoteResourceLoaderExtension</span> <span class="directive">implements</span> Extension {
+    <span class="directive">private</span> <span class="directive">static</span> <span class="directive">final</span> <span class="predefined-type">Logger</span> logger = <span class="predefined-type">Logger</span>.getLogger(RemoteResourceLoaderExtension.class.getName());
+
+    <span class="directive">public</span> RemoteResourceLoaderExtension() {
+        logger.log(<span class="predefined-type">Level</span>.INFO, <span class="string"><span class="delimiter">&quot;</span><span class="content">La extensión ha sido instanciada.</span><span class="delimiter">&quot;</span></span>);
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>CDI detecta las extensiones mediante el mecanismo de carga de servicios de Java<sup class="footnote">[<a id="_footnoteref_12" class="footnote" href="#_footnote_12" title="View footnote.">12</a>]</sup>. Para que detecte nuestra extensión, tendremos que crear un archivo
+ <code>javax.enterprise.inject.spi.Extension</code> en la carpeta META-INF\services, introduciendo como contenido el nombre completo de las clases de extensión, una en cada línea. En nuestro caso, sólo tenemos una extensión y el contenido sería el siguiente:</p>
+</div>
+<div class="listingblock">
+<div class="title">META-INF\services\javax.enterprise.inject.spi.Extension</div>
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java">es.guillermogonzalezdeaguero.remoteresource.RemoteResourceLoaderExtension</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Si desplegamos la aplicación, veremos en consola el mensaje "La extensión ha sido instanciada", indicando que todo va según lo previsto.</p>
+</div>
+<div class="paragraph">
+<p>El siguiente paso es crear la anotación que usaremos para indicar la inyección. Será nuestro equivalente al <code>@Inject</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="keyword">package</span> <span class="namespace">es.guillermogonzalezdeaguero.remoteresource</span>;
+
+<span class="keyword">import</span> <span class="include">java.lang.annotation.ElementType</span>;
+<span class="keyword">import</span> <span class="include">java.lang.annotation.Retention</span>;
+<span class="keyword">import</span> <span class="include">java.lang.annotation.RetentionPolicy</span>;
+<span class="keyword">import</span> <span class="include">java.lang.annotation.Target</span>;
+
+<span class="annotation">@Retention</span>(value = <span class="predefined-type">RetentionPolicy</span>.RUNTIME)
+<span class="annotation">@Target</span>(value = {<span class="predefined-type">ElementType</span>.FIELD})
+<span class="directive">public</span> <span class="annotation">@interface</span> RemoteResource {
+
+    <span class="directive">public</span> <span class="predefined-type">String</span> externalContextLookup(); <i class="conum" data-value="1"></i><b>(1)</b>
+
+    <span class="directive">public</span> <span class="predefined-type">String</span> lookup(); <i class="conum" data-value="2"></i><b>(2)</b>
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td>Búsqueda que debe hacerse en el JNDI local para obtener el <code>InitialContext</code> remoto</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="2"></i><b>2</b></td>
+<td>Búsqueda que se hará sobre el contexto externo para obtener el recurso a inyectar</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Es importante fijarse en el hecho de que la anotación <strong>no es un calificador</strong>, sino una anotación a secas. Los calificadores son anotaciones especiales que CDI utiliza en su mecanismo estándar de inyección para distinguir distintos <code>beans</code> de un mismo tipo. Nosotros estamos gestionando nuestra propia inyección y por tanto, no tenemos ninguna restricción.</p>
+</div>
+<div class="paragraph">
+<p>Vamos a crear ahora un EJB que se arranque en el despliegue y que haga uso de esta anotación:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="keyword">package</span> <span class="namespace">es.gonzalezdeaguero.remoteresourcetest</span>;
+
+<span class="keyword">import</span> <span class="include">es.guillermogonzalezdeaguero.remoteresource.RemoteResource</span>;
+<span class="keyword">import</span> <span class="include">javax.annotation.PostConstruct</span>;
+<span class="keyword">import</span> <span class="include">javax.ejb.Singleton</span>;
+<span class="keyword">import</span> <span class="include">javax.ejb.Startup</span>;
+
+<span class="annotation">@Singleton</span>
+<span class="annotation">@Startup</span>
+<span class="directive">public</span> <span class="type">class</span> <span class="class">InjectionTest</span> {
+
+    <span class="annotation">@RemoteResource</span>(externalContextLookup = <span class="string"><span class="delimiter">&quot;</span><span class="content">java:global/externo</span><span class="delimiter">&quot;</span></span>, lookup = <span class="string"><span class="delimiter">&quot;</span><span class="content">java:/contenido</span><span class="delimiter">&quot;</span></span>)
+    <span class="directive">private</span> <span class="predefined-type">String</span> contenido;
+
+    <span class="annotation">@PostConstruct</span>
+    <span class="directive">public</span> <span class="type">void</span> init() {
+        <span class="predefined-type">System</span>.out.println(<span class="string"><span class="delimiter">&quot;</span><span class="content">Contenido leído del JNDI remoto: </span><span class="delimiter">&quot;</span></span> + contenido);
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Si desplegamos ahora la aplicación, veremos que, como era de esperar, la variable es nula. Es lógico, teniendo en cuenta que nuestra extensión todavía no hace nada. Pero, si no ha sido posible procesar la inyección, ¿por qué CDI no ha lanzado una excepción indicándolo<sup class="footnote">[<a id="_footnoteref_13" class="footnote" href="#_footnote_13" title="View footnote.">13</a>]</sup>? Muy sencillo: CDI <strong>no sabe que para nosotros esa anotación representa un punto de inyección</strong>. A todos los efectos, esa anotación no representa más que un metadato. Para CDI no es nada. Lo será para nosotros cuando hayamos programado la extensión, y correrá por nuestra cuenta hacer las verificaciones pertinentes y lanzar las excepcciones <code>DefinitionError</code> <sup class="footnote">[<a id="_footnoteref_14" class="footnote" href="#_footnote_14" title="View footnote.">14</a>]</sup> o <code>DeploymentException</code> <sup class="footnote">[<a id="_footnoteref_15" class="footnote" href="#_footnote_15" title="View footnote.">15</a>]</sup>.</p>
+</div>
+<div class="paragraph">
+<p>Vamos a añadir ahora el código a nuestra extensión:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="keyword">package</span> <span class="namespace">es.guillermogonzalezdeaguero.remoteresource</span>;
+
+<span class="keyword">import</span> <span class="include">java.lang.reflect.Field</span>;
+<span class="keyword">import</span> <span class="include">java.util.HashMap</span>;
+<span class="keyword">import</span> <span class="include">java.util.Map</span>;
+<span class="keyword">import</span> <span class="include">java.util.Map.Entry</span>;
+<span class="keyword">import</span> <span class="include">java.util.Set</span>;
+<span class="keyword">import</span> <span class="include">java.util.logging.Logger</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.context.spi.CreationalContext</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.event.Observes</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.InjectionException</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.spi.AnnotatedField</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.spi.AnnotatedType</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.spi.Extension</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.spi.InjectionPoint</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.spi.InjectionTarget</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.spi.ProcessInjectionTarget</span>;
+<span class="keyword">import</span> <span class="include">javax.naming.InitialContext</span>;
+<span class="keyword">import</span> <span class="include">javax.naming.NamingException</span>;
+
+<span class="comment">/**
+ *
+ * @author Guillermo González de Agüero
+ */</span>
+<span class="directive">public</span> <span class="type">class</span> <span class="class">RemoteResourceLoaderExtension</span> <span class="directive">implements</span> Extension {
+
+    <span class="directive">private</span> <span class="directive">static</span> <span class="directive">final</span> <span class="predefined-type">Logger</span> logger = <span class="predefined-type">Logger</span>.getLogger(RemoteResourceLoaderExtension.class.getName());
+
+    <span class="directive">public</span> &lt;T&gt; <span class="type">void</span> initializePropertyLoading(<span class="directive">final</span> <span class="annotation">@Observes</span> ProcessInjectionTarget&lt;T&gt; pit) {
+        AnnotatedType&lt;T&gt; at = pit.getAnnotatedType();
+
+        <span class="type">boolean</span> anyMatch = at.getFields().
+                stream().
+                anyMatch(f -&gt; f.isAnnotationPresent(RemoteResource.class));<i class="conum" data-value="1"></i><b>(1)</b>
+        <span class="keyword">if</span> (!anyMatch) {
+            <span class="keyword">return</span>;
+        }
+
+        <span class="comment">// Se verifica que todas las inyecciones sean válidas</span>
+        <span class="predefined-type">Map</span>&lt;AnnotatedField, <span class="predefined-type">Object</span>&gt; fieldValues = <span class="keyword">new</span> <span class="predefined-type">HashMap</span>&lt;&gt;();
+        at.getFields().stream().
+                filter(f -&gt; f.isAnnotationPresent(RemoteResource.class)).
+                forEach(annotatedField -&gt; {<i class="conum" data-value="2"></i><b>(2)</b>
+                    RemoteResource remoteResource = annotatedField.getAnnotation(RemoteResource.class);
+                    <span class="predefined-type">Field</span> field = annotatedField.getJavaMember();
+
+                    <span class="keyword">try</span> {
+                        T value = performLookup(remoteResource);
+                        validateValue(field, value);
+                    } <span class="keyword">catch</span> (<span class="exception">Exception</span> e) {
+                        pit.addDefinitionError(<span class="keyword">new</span> InjectionException(e));<i class="conum" data-value="3"></i><b>(3)</b>
+                    }
+                });
+
+        <span class="comment">// Se establece el mecanismo para realizar la inyección cuando algún bean la solicite</span>
+        <span class="directive">final</span> InjectionTarget&lt;T&gt; it = pit.getInjectionTarget();
+        InjectionTarget&lt;T&gt; wrapped = <span class="keyword">new</span> InjectionTarget&lt;T&gt;() {
+            <span class="annotation">@Override</span>
+            <span class="annotation">@SuppressWarnings</span>(<span class="string"><span class="delimiter">&quot;</span><span class="content">unchecked</span><span class="delimiter">&quot;</span></span>)
+            <span class="directive">public</span> <span class="type">void</span> inject(T instance, CreationalContext&lt;T&gt; ctx) {
+                it.inject(instance, ctx);<i class="conum" data-value="4"></i><b>(4)</b>
+
+                Stream.of(instance.getClass().getDeclaredFields()).
+                        filter(f -&gt; f.isAnnotationPresent(RemoteResource.class)).
+                        forEach(field -&gt; {
+                            T value = <span class="predefined-constant">null</span>;
+                            <span class="keyword">try</span> {
+                                value = performLookup(field.getAnnotation(RemoteResource.class));<i class="conum" data-value="5"></i><b>(5)</b>
+                                validateValue(field, value);
+                            } <span class="keyword">catch</span> (<span class="exception">Exception</span> e) {
+                                <span class="keyword">throw</span> <span class="keyword">new</span> InjectionException(e);
+                            }
+
+                            <span class="keyword">try</span> {
+                                field.set(instance, value);<i class="conum" data-value="6"></i><b>(6)</b>
+                            } <span class="keyword">catch</span> (<span class="exception">IllegalArgumentException</span> | <span class="exception">IllegalAccessException</span> e) {
+                                <span class="keyword">throw</span> <span class="keyword">new</span> InjectionException(e);
+                            }
+                        });
+            }
+
+            <span class="annotation">@Override</span>
+            <span class="directive">public</span> <span class="type">void</span> postConstruct(T instance) {
+                it.postConstruct(instance);
+            }
+
+            <span class="annotation">@Override</span>
+            <span class="directive">public</span> <span class="type">void</span> preDestroy(T instance) {
+                it.dispose(instance);
+            }
+
+            <span class="annotation">@Override</span>
+            <span class="directive">public</span> <span class="type">void</span> dispose(T instance) {
+                it.dispose(instance);
+            }
+
+            <span class="annotation">@Override</span>
+            <span class="directive">public</span> <span class="predefined-type">Set</span>&lt;InjectionPoint&gt; getInjectionPoints() {
+                <span class="keyword">return</span> it.getInjectionPoints();
+            }
+
+            <span class="annotation">@Override</span>
+            <span class="directive">public</span> T produce(CreationalContext&lt;T&gt; ctx) {
+                <span class="keyword">return</span> it.produce(ctx);
+            }
+        };
+
+        pit.setInjectionTarget(wrapped);<i class="conum" data-value="7"></i><b>(7)</b>
+    }
+
+    <span class="directive">private</span> &lt;T&gt; T performLookup(RemoteResource annotation) <span class="directive">throws</span> <span class="exception">NamingException</span> {
+        <span class="predefined-type">String</span> externalContextLookup = annotation.externalContextLookup();
+        <span class="predefined-type">String</span> jndiLookup = annotation.lookup();
+
+        <span class="predefined-type">InitialContext</span> context = <span class="predefined-type">InitialContext</span>.doLookup(externalContextLookup);
+
+        <span class="keyword">return</span> (T) context.lookup(jndiLookup);
+    }
+
+    <span class="directive">private</span> &lt;T&gt; <span class="type">void</span> validateValue(<span class="predefined-type">Field</span> field, T value) {
+        <span class="keyword">if</span> (value == <span class="predefined-constant">null</span>) {
+            <span class="keyword">throw</span> <span class="keyword">new</span> <span class="exception">IllegalArgumentException</span>(<span class="string"><span class="delimiter">&quot;</span><span class="content">No value found for field </span><span class="delimiter">&quot;</span></span> + field.toString());
+        }
+
+        <span class="keyword">if</span> (!field.getType().isAssignableFrom(value.getClass())) {
+            <span class="keyword">throw</span> <span class="keyword">new</span> <span class="exception">IllegalArgumentException</span>(<span class="string"><span class="delimiter">&quot;</span><span class="content">Incompatible value type for field </span><span class="delimiter">&quot;</span></span> + field.toString());
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td>A este método nos van a llegar todas las clases que se procesen. Verificamos que efectivamente haya <strong>alguna</strong> propiedad con nuestra anotación</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="2"></i><b>2</b></td>
+<td>Cogemos únicamente las propiedades anotadas y verificamos que la búsqueda sea válida</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="3"></i><b>3</b></td>
+<td>En caso de error, debemos avisar al contenedor para que muestre un mensaje al usuario y cancele el despliegue, si es necesario.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="4"></i><b>4</b></td>
+<td>Delegamos de primeras todas las inyecciones al método que hubiera predefinido. Lo que estamos haciendo aquí es modificar <strong>toda la inyección en esta clase</strong>. Esto incluye las propiedades anotadas con <code>@Inject</code>. Haciendo esta llamada, dejamos que el contenedor <strong>y otras extensiones que se hayan cargado antes de la nuestra</strong> hagan lo que tuvieran ya previsto, y después añadimos nuestro procesamiento.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="5"></i><b>5</b></td>
+<td>Se van recorriendo todos los campos y se hace la búsqueda del JNDI y se valida de nuevo (el valor podría haber cambiado).</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="6"></i><b>6</b></td>
+<td>Finalmente asignamos el valor. Este método <code>inject()</code> será llamado cada vez que se instancie una clase y se requiera inyectar un campo con nuestra anotación.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="7"></i><b>7</b></td>
+<td>Cambiamos el <code>InjectionTarget</code> <sup class="footnote">[<a id="_footnoteref_16" class="footnote" href="#_footnote_16" title="View footnote.">16</a>]</sup> de la clase por el nuestro, que ha decorado<sup class="footnote">[<a id="_footnoteref_17" class="footnote" href="#_footnote_17" title="View footnote.">17</a>]</sup> el original.</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>La idea es muy sencilla:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>CDI llamará a nuestra extensión lanzando un evento por cada clase que encuentre sobre la que se pueda realizar inyección.</p>
+</li>
+<li>
+<p>En cada clase, verificaremos si tiene alguna propiedad donde <strong>nosotros</strong> debamos hacer algún tipo de inyección</p>
+</li>
+<li>
+<p>Verificamos la disponibilidad de los datos solicitados en cada caso.</p>
+</li>
+<li>
+<p>Decoramos el <code>InjectionTarget</code> de la clase, añadiendo la lógica necesaria para realizar la inyección en nuestros campos.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Si desplegamos ahora nuestra aplicación, veremos que el valor se inyecta correctamente. Podemos probar a parar el servidor remoto para verificar que se ejecutan correctamente las validaciones y se cancela el despliegue en caso de que el recurso remoto no esté disponible.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="empaquetado_y_distribución_de_código">Empaquetado y distribución de código</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Todo este trabajo está muy bien, pero no queremos copiar y pegar en cada proyecto donde lo necesitemos. Por suerte, la especificación contempla la posibilidad de empaquetar las extensiones en un JAR<sup class="footnote">[<a id="_footnoteref_18" class="footnote" href="#_footnote_18" title="View footnote.">18</a>]</sup>. Sólo tendremos que mover nuestras clases, el <code>META-INF\services\javax.enterprise.inject.spi.Extension</code> y copiar el <code>beans.xml</code> a la carpeta META-INF, y ya podremos compilar como JAR e importarlo desde cualquier proyecto web.</p>
+</div>
+<div class="paragraph">
+<p>La inclusión del <code>beans.xml</code> dentro del JAR no es necesaria: funcionaría sin ella <strong>siempre y cuando el proyecto web que la importe contenga un beans.xml</strong>. Puesto que este fichero es opcional en Java EE 7, para evitar cualquier tipo de problema, lo mejor es incluirlo en el propio JAR. Para no tener incompatibilidades entre los atributos del beans.xml de nuestro JAR y los del WAR que lo importe, nuestro <code>beans.xml</code> del JAR debe estar vacío o dejar todos los valores por defecto, como en nuestro ejemplo.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="trabajo_posterior">Trabajo posterior</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Genial, tenemos nuestra extensión y ya se procesa nuestra anotación. Va todo de lujo. Pero ahora hemos usado nuestra anotación en un bean con ámbito de petición<sup class="footnote">[<a id="_footnoteref_19" class="footnote" href="#_footnote_19" title="View footnote.">19</a>]</sup>. Cada vez que alguien carga la página, se tiene que hacer la búsqueda en el JNDI remoto. Estaría bien poder cacheara el resultado.</p>
+</div>
+<div class="paragraph">
+<p>Conforme vamos usándolo, descubrimos otras carencias: ¿qué ocurre si una búsqueda no está disponible en el momento del despliegue? La validación fallará y ya aplicación no se podrá desplegar. Por otra parte, sólo permitimos la inyección en propiedades, pero no en setters, como ocurre con los <code>@Inject</code>.</p>
+</div>
+<div class="paragraph">
+<p>A continuación, abordaremos las siguientes cuestiones:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Hacer opcional la validación del despliegue.</p>
+</li>
+<li>
+<p>Permitir cachear las búsquedas remotas.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Para empezar, modificaremos nuestra anotación <code>@RemoteResource</code> para dar soporte a estas nuevas funcionalidades:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="keyword">package</span> <span class="namespace">es.guillermogonzalezdeaguero.remoteresource</span>;
+
+<span class="keyword">import</span> <span class="include">static</span> <span class="include">java.lang.annotation.ElementType.FIELD</span>;
+<span class="keyword">import</span> <span class="include">java.lang.annotation.Retention</span>;
+<span class="keyword">import</span> <span class="include">static</span> <span class="include">java.lang.annotation.RetentionPolicy.RUNTIME</span>;
+<span class="keyword">import</span> <span class="include">java.lang.annotation.Target</span>;
+
+<span class="annotation">@Retention</span>(RUNTIME)
+<span class="annotation">@Target</span>(FIELD)
+<span class="directive">public</span> <span class="annotation">@interface</span> RemoteResource {
+
+    <span class="predefined-type">String</span> externalContextLookup();
+
+    <span class="predefined-type">String</span> lookup();
+
+    <span class="type">boolean</span> cache() <span class="keyword">default</span> <span class="predefined-constant">true</span>;
+
+    <span class="type">boolean</span> validateOnDeployment() <span class="keyword">default</span> <span class="predefined-constant">true</span>;
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Y después modificaremos la extensión:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="CodeRay highlight"><code data-lang="java"><span class="keyword">package</span> <span class="namespace">es.guillermogonzalezdeaguero.remoteresource</span>;
+
+<span class="keyword">import</span> <span class="include">java.lang.reflect.Field</span>;
+<span class="keyword">import</span> <span class="include">java.util.HashMap</span>;
+<span class="keyword">import</span> <span class="include">java.util.Map</span>;
+<span class="keyword">import</span> <span class="include">java.util.Set</span>;
+<span class="keyword">import</span> <span class="include">java.util.logging.Logger</span>;
+<span class="keyword">import</span> <span class="include">java.util.stream.Stream</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.context.spi.CreationalContext</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.event.Observes</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.InjectionException</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.spi.AnnotatedType</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.spi.Extension</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.spi.InjectionPoint</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.spi.InjectionTarget</span>;
+<span class="keyword">import</span> <span class="include">javax.enterprise.inject.spi.ProcessInjectionTarget</span>;
+<span class="keyword">import</span> <span class="include">javax.naming.InitialContext</span>;
+<span class="keyword">import</span> <span class="include">javax.naming.NamingException</span>;
+
+<span class="directive">public</span> <span class="type">class</span> <span class="class">RemoteResourceLoaderExtension</span> <span class="directive">implements</span> Extension {
+
+    <span class="directive">private</span> <span class="directive">static</span> <span class="directive">final</span> <span class="predefined-type">Logger</span> logger = <span class="predefined-type">Logger</span>.getLogger(RemoteResourceLoaderExtension.class.getName());
+
+    <span class="directive">public</span> &lt;T&gt; <span class="type">void</span> initializePropertyLoading(<span class="directive">final</span> <span class="annotation">@Observes</span> ProcessInjectionTarget&lt;T&gt; pit) {
+        AnnotatedType&lt;T&gt; at = pit.getAnnotatedType();
+
+        <span class="type">boolean</span> anyMatch = at.getFields().
+                stream().
+                anyMatch(f -&gt; f.isAnnotationPresent(RemoteResource.class));
+        <span class="keyword">if</span> (!anyMatch) {
+            <span class="keyword">return</span>;
+        }
+
+        <span class="predefined-type">Map</span>&lt;<span class="predefined-type">String</span>, <span class="predefined-type">Object</span>&gt; cachedLookups = <span class="keyword">new</span> <span class="predefined-type">HashMap</span>&lt;&gt;();
+        at.getFields().stream().
+                filter(f -&gt; f.isAnnotationPresent(RemoteResource.class)).
+                forEach(annotatedField -&gt; {
+                    RemoteResource remoteResource = annotatedField.getAnnotation(RemoteResource.class);
+                    <span class="predefined-type">Field</span> field = annotatedField.getJavaMember();
+
+                    <span class="keyword">if</span> (remoteResource.validateOnDeployment()) {<i class="conum" data-value="1"></i><b>(1)</b>
+                        <span class="keyword">try</span> {
+                            lookupAndValidateAndCache(remoteResource, field, cachedLookups);
+                        } <span class="keyword">catch</span> (<span class="exception">Exception</span> e) {
+                            pit.addDefinitionError(<span class="keyword">new</span> InjectionException(e));
+                        }
+                    }
+
+                });
+
+        <span class="directive">final</span> InjectionTarget&lt;T&gt; it = pit.getInjectionTarget();
+        InjectionTarget&lt;T&gt; wrapped = <span class="keyword">new</span> InjectionTarget&lt;T&gt;() {
+            <span class="annotation">@Override</span>
+            <span class="annotation">@SuppressWarnings</span>(<span class="string"><span class="delimiter">&quot;</span><span class="content">unchecked</span><span class="delimiter">&quot;</span></span>)
+            <span class="directive">public</span> <span class="type">void</span> inject(T instance, CreationalContext&lt;T&gt; ctx) {
+                it.inject(instance, ctx);
+
+                Stream.of(instance.getClass().getDeclaredFields()).
+                        filter(f -&gt; f.isAnnotationPresent(RemoteResource.class)).
+                        forEach(field -&gt; {
+                            RemoteResource annotation = field.getAnnotation(RemoteResource.class);
+
+                            field.setAccessible(<span class="predefined-constant">true</span>);
+                            <span class="keyword">try</span> {
+                                T value = lookupAndValidateAndCache(annotation, field, cachedLookups);
+                                field.set(instance, value);
+                            } <span class="keyword">catch</span> (<span class="predefined-type">Throwable</span> e) {
+                                <span class="keyword">throw</span> <span class="keyword">new</span> InjectionException(e);
+                            }
+                        });
+            }
+
+            <span class="annotation">@Override</span>
+            <span class="directive">public</span> <span class="type">void</span> postConstruct(T instance) {
+                it.postConstruct(instance);
+            }
+
+            <span class="annotation">@Override</span>
+            <span class="directive">public</span> <span class="type">void</span> preDestroy(T instance) {
+                it.dispose(instance);
+            }
+
+            <span class="annotation">@Override</span>
+            <span class="directive">public</span> <span class="type">void</span> dispose(T instance) {
+                it.dispose(instance);
+            }
+
+            <span class="annotation">@Override</span>
+            <span class="directive">public</span> <span class="predefined-type">Set</span>&lt;InjectionPoint&gt; getInjectionPoints() {
+                <span class="keyword">return</span> it.getInjectionPoints();
+            }
+
+            <span class="annotation">@Override</span>
+            <span class="directive">public</span> T produce(CreationalContext&lt;T&gt; ctx) {
+                <span class="keyword">return</span> it.produce(ctx);
+            }
+        };
+
+        pit.setInjectionTarget(wrapped);
+    }
+
+    <span class="directive">private</span> &lt;T&gt; T lookupAndValidateAndCache(RemoteResource annotation, <span class="predefined-type">Field</span> field, <span class="predefined-type">Map</span>&lt;<span class="predefined-type">String</span>, <span class="predefined-type">Object</span>&gt; cache) <span class="directive">throws</span> <span class="exception">NamingException</span> {
+        <span class="predefined-type">String</span> key = annotation.externalContextLookup() + annotation.lookup();
+
+        T value;
+        <span class="keyword">if</span> (annotation.cache()) {<i class="conum" data-value="2"></i><b>(2)</b>
+            value = (T) cache.get(key);
+            <span class="keyword">if</span> (value == <span class="predefined-constant">null</span>) {
+                value = performLookup(annotation);
+                validateValue(field, value);
+                cache.put(key, value);<i class="conum" data-value="3"></i><b>(3)</b>
+            }
+        } <span class="keyword">else</span> {
+            value = performLookup(annotation);
+            validateValue(field, value);
+        }
+
+        <span class="keyword">return</span> value;
+    }
+
+    <span class="directive">private</span> &lt;T&gt; T performLookup(RemoteResource annotation) <span class="directive">throws</span> <span class="exception">NamingException</span> {
+        <span class="predefined-type">String</span> externalContextLookup = annotation.externalContextLookup();
+        <span class="predefined-type">String</span> jndiLookup = annotation.lookup();
+
+        <span class="predefined-type">InitialContext</span> context = <span class="predefined-type">InitialContext</span>.doLookup(externalContextLookup);
+
+        <span class="keyword">return</span> (T) context.lookup(jndiLookup);
+    }
+
+    <span class="directive">private</span> &lt;T&gt; <span class="type">void</span> validateValue(<span class="predefined-type">Field</span> field, T value) {
+        <span class="keyword">if</span> (value == <span class="predefined-constant">null</span>) {
+            <span class="keyword">throw</span> <span class="keyword">new</span> <span class="exception">IllegalArgumentException</span>(<span class="string"><span class="delimiter">&quot;</span><span class="content">No value found for field </span><span class="delimiter">&quot;</span></span> + field.toString());
+        }
+
+        <span class="keyword">if</span> (!field.getType().isAssignableFrom(value.getClass())) {
+            <span class="keyword">throw</span> <span class="keyword">new</span> <span class="exception">IllegalArgumentException</span>(<span class="string"><span class="delimiter">&quot;</span><span class="content">Incompatible value type for field </span><span class="delimiter">&quot;</span></span> + field.toString());
+        }
+    }
+}</code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td>Sólo se valida en el despliegue en caso de que se haya solicitado</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="2"></i><b>2</b></td>
+<td>Verificamos si el elemento hace uso de caché.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="3"></i><b>3</b></td>
+<td>Se guarda el valor para usos futuros usando como clave la búsqueda del contexto externo concatenado la búsqueda local y la remota.</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="conclusión">Conclusión</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>CDI ha cambiado la forma en que se programan aplicaciones para la plataforma Java EE. Va camino de convertirse en el lo que debería haber sido desde un primer momento el EJB<sup class="footnote">[<a id="_footnoteref_20" class="footnote" href="#_footnote_20" title="View footnote.">20</a>]</sup>. Pero CDI va mucho más allá.</p>
+</div>
+<div class="paragraph">
+<p>La mayoría de la gente conoce sus funcionalidaes básicas: inyección de dependencias, contextos, productores, calificadores, etc. Lo que se usa todos los días. La API de extensiones es algo oscura y desconocida, aunque hemos podido ver que realmente no es complicada de usar.</p>
+</div>
+<div class="paragraph">
+<p>Está claro que esta no es la extensión más útil que podríamos haber creado. No se hacen búsquedas en JNDI externos a diario, y para casos concretos, es más cómodo crear un alias local en el servidor. Lo verdaderamente importante es comprender las posibilidades que nos ofrece la plataforma y saber cuándo debe usarse cada cosa.</p>
+</div>
+<div class="paragraph">
+<p>Realmente, hemos visto que no hemos hecho nada que no hubiéramos podido hacer con un simple productor. Pero también hemos visto las dos grandes ventajas de usar una extensión: <strong>tipado fuerte</strong> y <strong>validación en el despliegue</strong>.</p>
+</div>
+<div class="paragraph">
+<p>En Internet podemos encontrar varios artículos que explican cómo crear un sistema de configuración en CDI mediante un productor<sup class="footnote">[<a id="_footnoteref_21" class="footnote" href="#_footnote_21" title="View footnote.">21</a>]</sup>. Es una opción sencilla y válida, pero ¿no sería mejor que durante el despliegue se verificase que todas las configuraciones solicitadas están disponibles? Imaginemos un caso algo más complejo: tenemos un archivo de configuración que se fusiona después con una lista de propiedades leídas de base de datos. Conforme aumenta la lógica, coge fuerza la idea de delegar el trabajo al propio contenedor.</p>
+</div>
+<div class="paragraph">
+<p>Crear un productor tiene la ventaja de permitir lidiar con datos que puedan variar en tiempo de ejecución. Como norma general, siempre que todas las posibilidades se conocen ya en el despliegue, recomiendo usar una extensión.</p>
+</div>
+<div class="paragraph">
+<p>Código fuente: <a href="https://github.com/ggam/remoteresource" class="bare">https://github.com/ggam/remoteresource</a></p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="bibliografía">Bibliografía</h2>
+<div class="sectionbody">
+<div class="ulist bibliography">
+<ul class="bibliography">
+<li>
+<p>Detalles de implementación: <a href="http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html" class="bare">http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html</a></p>
+</li>
+<li>
+<p>Configuración del servidor: <a href="https://docs.jboss.org/author/display/WFLY10/Naming+Subsystem+Configuration" class="bare">https://docs.jboss.org/author/display/WFLY10/Naming+Subsystem+Configuration</a></p>
+</li>
+<li>
+<p>Idea original: <a href="http://www.javacodegeeks.com/2014/02/tutorial-writing-your-own-cdi-extension.html" class="bare">http://www.javacodegeeks.com/2014/02/tutorial-writing-your-own-cdi-extension.html</a></p>
+</li>
+</ul>
+</div>
+</div>
+</div>
+<div id="footnotes">
+<hr>
+<div class="footnote" id="_footnote_1">
+<a href="#_footnoteref_1">1</a>. <a href="https://docs.oracle.com/javase/8/docs/api/javax/naming/InitialContext.html" class="bare">https://docs.oracle.com/javase/8/docs/api/javax/naming/InitialContext.html</a>
+</div>
+<div class="footnote" id="_footnote_2">
+<a href="#_footnoteref_2">2</a>. <a href="https://docs.oracle.com/javaee/7/api/javax/annotation/Resource.html" class="bare">https://docs.oracle.com/javaee/7/api/javax/annotation/Resource.html</a>
+</div>
+<div class="footnote" id="_footnote_3">
+<a href="#_footnoteref_3">3</a>. <a href="https://docs.jboss.org/author/display/WFLY10/Global+Bindings+Configuration" class="bare">https://docs.jboss.org/author/display/WFLY10/Global+Bindings+Configuration</a>
+</div>
+<div class="footnote" id="_footnote_4">
+<a href="#_footnoteref_4">4</a>. <a href="https://docs.oracle.com/javase/8/docs/api/javax/naming/spi/ObjectFactory.html" class="bare">https://docs.oracle.com/javase/8/docs/api/javax/naming/spi/ObjectFactory.html</a>
+</div>
+<div class="footnote" id="_footnote_5">
+<a href="#_footnoteref_5">5</a>. <a href="http://wildfly.org/downloads/" class="bare">http://wildfly.org/downloads/</a>
+</div>
+<div class="footnote" id="_footnote_6">
+<a href="#_footnoteref_6">6</a>. <a href="https://docs.oracle.com/javaee/7/api/javax/enterprise/inject/Produces.html" class="bare">https://docs.oracle.com/javaee/7/api/javax/enterprise/inject/Produces.html</a>
+</div>
+<div class="footnote" id="_footnote_7">
+<a href="#_footnoteref_7">7</a>. <a href="http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#producer_method" class="bare">http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#producer_method</a>
+</div>
+<div class="footnote" id="_footnote_8">
+<a href="#_footnoteref_8">8</a>. <a href="https://docs.oracle.com/javaee/7/api/javax/inject/Qualifier.html" class="bare">https://docs.oracle.com/javaee/7/api/javax/inject/Qualifier.html</a>
+</div>
+<div class="footnote" id="_footnote_9">
+<a href="#_footnoteref_9">9</a>. <a href="http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#init_events" class="bare">http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#init_events</a>
+</div>
+<div class="footnote" id="_footnote_10">
+<a href="#_footnoteref_10">10</a>. <a href="https://docs.oracle.com/javaee/7/api/javax/enterprise/inject/spi/ProcessInjectionTarget.html" class="bare">https://docs.oracle.com/javaee/7/api/javax/enterprise/inject/spi/ProcessInjectionTarget.html</a>
+</div>
+<div class="footnote" id="_footnote_11">
+<a href="#_footnoteref_11">11</a>. <a href="http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#legal_injection_point_types" class="bare">http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#legal_injection_point_types</a>
+</div>
+<div class="footnote" id="_footnote_12">
+<a href="#_footnoteref_12">12</a>. <a href="https://docs.oracle.com/javase/tutorial/ext/basics/spi.html" class="bare">https://docs.oracle.com/javase/tutorial/ext/basics/spi.html</a>
+</div>
+<div class="footnote" id="_footnote_13">
+<a href="#_footnoteref_13">13</a>. <a href="http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#unsatisfied_and_ambig_dependencies" class="bare">http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#unsatisfied_and_ambig_dependencies</a>
+</div>
+<div class="footnote" id="_footnote_14">
+<a href="#_footnoteref_14">14</a>. <a href="http://docs.oracle.com/javaee/7/api/javax/enterprise/inject/spi/DefinitionException.html" class="bare">http://docs.oracle.com/javaee/7/api/javax/enterprise/inject/spi/DefinitionException.html</a>
+</div>
+<div class="footnote" id="_footnote_15">
+<a href="#_footnoteref_15">15</a>. <a href="https://docs.oracle.com/javaee/7/api/javax/enterprise/inject/spi/DeploymentException.html" class="bare">https://docs.oracle.com/javaee/7/api/javax/enterprise/inject/spi/DeploymentException.html</a>
+</div>
+<div class="footnote" id="_footnote_16">
+<a href="#_footnoteref_16">16</a>. <a href="https://docs.oracle.com/javaee/7/api/javax/enterprise/inject/spi/InjectionTarget.html" class="bare">https://docs.oracle.com/javaee/7/api/javax/enterprise/inject/spi/InjectionTarget.html</a>
+</div>
+<div class="footnote" id="_footnote_17">
+<a href="#_footnoteref_17">17</a>. <a href="https://es.wikipedia.org/wiki/Decorator_%28patr%C3%B3n_de_dise%C3%B1o%29" class="bare">https://es.wikipedia.org/wiki/Decorator_%28patr%C3%B3n_de_dise%C3%B1o%29</a>
+</div>
+<div class="footnote" id="_footnote_18">
+<a href="#_footnoteref_18">18</a>. <a href="http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#bean_archive" class="bare">http://docs.jboss.org/cdi/spec/1.2/cdi-spec-with-assertions.html#bean_archive</a>
+</div>
+<div class="footnote" id="_footnote_19">
+<a href="#_footnoteref_19">19</a>. <a href="https://docs.oracle.com/javaee/7/api/javax/enterprise/context/RequestScoped.html" class="bare">https://docs.oracle.com/javaee/7/api/javax/enterprise/context/RequestScoped.html</a>
+</div>
+<div class="footnote" id="_footnote_20">
+<a href="#_footnoteref_20">20</a>. <a href="https://blogs.oracle.com/theaquarium/entry/ejb_and_cdi_alignment_and" class="bare">https://blogs.oracle.com/theaquarium/entry/ejb_and_cdi_alignment_and</a>
+</div>
+<div class="footnote" id="_footnote_21">
+<a href="#_footnoteref_21">21</a>. <a href="https://martinsdeveloperworld.wordpress.com/2014/02/23/injecting-configuration-values-using-cdis-injectionpoint/" class="bare">https://martinsdeveloperworld.wordpress.com/2014/02/23/injecting-configuration-values-using-cdis-injectionpoint/</a>
+</div>
+</div>
+
+    </div>
+
+    <!-- End Main Content -->
+</div>
+
+<!-- End Main Content and Sidebar -->
+
+
+<!-- Footer -->
+
+<footer class="row">
+    <div class="large-12 columns">
+        <hr>
+        <div class="row">
+            <div class="large-12 columns">
+                <p>Guillermo González de Agüero. 2016-2017.</p>
+            </div>
+        </div>
+    </div>
+</footer>
+
+<script src="/blog/js/vendor/jquery.js"></script>
+<script src="/blog/js/foundation.min.js"></script>
+<script>
+$(document).foundation();
+var doc = document.documentElement;
+doc.setAttribute('data-useragent', navigator.userAgent);
+</script>
+</body>
+</html>
